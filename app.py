@@ -9,6 +9,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
 from google.cloud import storage
+import urllib.parse
 
 
 # Configure logging
