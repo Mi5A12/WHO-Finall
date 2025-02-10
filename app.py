@@ -9,8 +9,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
 from google.cloud import storage
-import urllib.parse
-
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -259,26 +257,19 @@ def process():
         logging.error(f"An unexpected error occurred: {e}")
         return render_template('index.html', error=f"An unexpected error occurred: {str(e)}")
 
-def encode_link(link: str) -> str:
-    """
-    Replaces '&' with '%26' in the given link parameter.
-    
-    :param link: The original link containing '&'.
-    :return: The encoded link with '&' replaced by '%26'.
-    """
-    return link.replace("&", "%26")
 
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
     try:
-        link = request.args.get('link')
-        rpa_id = request.args.get('rpa_id')
+        if request.method == 'POST':
+            link = request.args.get('link')
+            rpa_id = request.args.get('rpa_id')
+        elif request.method == 'GET':
+            link = request.args.get('link')
+            rpa_id = request.args.get('rpa_id')
 
         if not link or not rpa_id:
             return jsonify({"status": "error", "message": "Please provide both a valid link and RPA ID."}), 400
-
-        # Encode the URL to handle special characters
-        link = encode_link(link)
 
         extracted_data = extract_data_from_url(link)
         if not extracted_data:
