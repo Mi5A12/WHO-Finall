@@ -258,12 +258,20 @@ def process():
         return render_template('index.html', error=f"An unexpected error occurred: {str(e)}")
 
 
+def modify_url(url):
+    # Replace all '&' with '%26'
+    modified_url = url.replace('&', '%26')
+    # Replace '%26rpa' with '&rpa'
+    modified_url = modified_url.replace('%26rpa', '&rpa')
+    return modified_url
+
+
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
     try:
         if request.method == 'POST':
-            link = request.args.get('link')
-            rpa_id = request.args.get('rpa_id')
+            link = request.form.get('link')
+            rpa_id = request.form.get('rpa_id')
         elif request.method == 'GET':
             link = request.args.get('link')
             rpa_id = request.args.get('rpa_id')
@@ -271,7 +279,9 @@ def webhook():
         if not link or not rpa_id:
             return jsonify({"status": "error", "message": "Please provide both a valid link and RPA ID."}), 400
 
-        extracted_data = extract_data_from_url(link)
+        modified_link = modify_url(link)
+
+        extracted_data = extract_data_from_url(modified_link)
         if not extracted_data:
             return jsonify({"status": "error", "message": "Failed to extract data from the provided link."}), 400
 
@@ -350,7 +360,6 @@ def webhook():
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return jsonify({"status": "error", "message": f"An unexpected error occurred: {str(e)}"}), 500
-
 
 if __name__ == '__main__':
     app.run(debug=True, port=5002)
