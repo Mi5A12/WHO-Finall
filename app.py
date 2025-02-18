@@ -257,7 +257,6 @@ def process():
         query_params = {
             "typeId": 1,
             "id": rpa_id,
-            #"fields[UF_RPA_1_LINK]": modified_link,
             "fields[UF_RPA_1_WEIGHT]": weight,
             "fields[UF_RPA_1_HEIGHT]": height,
             "fields[UF_RPA_1_1734279376]": bmi,
@@ -287,7 +286,7 @@ def process():
             "fields[UF_RPA_1_1738508329]": extracted_data.get("pbf")
         }
 
-        target_url = "https://vitrah.bitrix24.com/rest/1/15urrpzalz7xkysu/rpa.item.update.json"        
+        target_url = "https://vitrah.bitrix24.com/rest/1/15urrpzalz7xkysu/rpa.item.update.json"
         headers = {
             'Authorization': f'Bearer {session["access_token"]}'
         }
@@ -308,7 +307,6 @@ def modify_url(url):
     # Replace '%26rpa' with '&rpa'
     modified_url = modified_url.replace('%26rpa', '&rpa')
     return modified_url
-
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
@@ -367,7 +365,6 @@ def webhook():
         query_params = {
             "typeId": 1,
             "id": rpa_id,
-            "fields[UF_RPA_1_LINK]": modified_link,
             "fields[UF_RPA_1_WEIGHT]": weight,
             "fields[UF_RPA_1_HEIGHT]": height,
             "fields[UF_RPA_1_1734279376]": bmi,
@@ -411,5 +408,6 @@ def webhook():
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return jsonify({"status": "error", "message": f"An unexpected error occurred: {str(e)}"}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, port=5002)
