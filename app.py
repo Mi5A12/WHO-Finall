@@ -54,7 +54,10 @@ def oauth_callback():
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to get token: {e.response.text if e.response else str(e)}")
         return jsonify({"status": "error", "message": f"Failed to get token: {e.response.text if e.response else str(e)}"}), 500
-
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {str(e)}")
+        return jsonify({"status": "error", "message": f"An unexpected error occurred: {str(e)}"}), 500
+    
 @app.route('/')
 def index():
     if 'access_token' not in session:
