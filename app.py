@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from flask import Flask, request, render_template, jsonify, url_for
+from flask import Flask, request, redirect, url_for, session, jsonify, render_template
 import requests
 from bs4 import BeautifulSoup
 import matplotlib
@@ -14,11 +14,52 @@ from google.cloud import storage
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
+app.secret_key = 'your_secret_key'
+
 
 # Configuration
 UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'static/charts')
 DOWNLOAD_FOLDER = os.getenv('DOWNLOAD_FOLDER', 'downloads')
 GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME', 'child-growth-charts')
+CLIENT_ID = 'local.67b4610184f667.59430782'
+CLIENT_SECRET = 'z9GByyQGnY1hPlJrrkALsoBjz3gkWozuXwxwBZxMdmGbFo77fx'
+REDIRECT_URI = 'http://cultiv.bitrix24.com/oauth/callback'
+
+def get_oauth_url():
+    return f"https://oauth.bitrix.info/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}"
+
+def get_token(code):
+    url = 'https://oauth.bitrix.info/oauth/token/'
+    data = {
+        'grant_type': 'authorization_code',
+        'client_id': CLIENT_ID,
+        'client_secret': CLIENT_SECRET,
+        'code': code,
+        'redirect_uri': REDIRECT_URI
+    }
+    response = requests.post(url, data=data)
+    response.raise_for_status()
+    return response.json()
+
+@app.route('/oauth/callback')
+def oauth_callback():
+    code = request.args.get('code')
+    if not code:
+        return jsonify({"status": "error", "message": "Missing authorization code"}), 400
+
+    try:
+        token_data = get_token(code)
+        session['access_token'] = token_data['access_token']
+        return redirect(url_for('index'))
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to get token: {e.response.text if e.response else str(e)}")
+        return jsonify({"status": "error", "message": f"Failed to get token: {e.response.text if e.response else str(e)}"}), 500
+
+@app.route('/')
+def index():
+    if 'access_token' not in session:
+        return redirect(get_oauth_url())
+    return render_template('index.html')
 
 # Ensure directories exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -164,12 +205,11 @@ def plot_growth_chart(data, age, metric, metric_label, title, output_path):
     except Exception as e:
         logging.error(f"Error in plot_growth_chart: {e}")
 
-@app.route('/')
-def index():
-    return render_template('index.html')
-
 @app.route('/process', methods=['POST'])
 def process():
+    if 'access_token' not in session:
+        return redirect(get_oauth_url())
+
     link = request.form.get('link')
     rpa_id = request.form.get('rpa_id')
 
@@ -177,7 +217,8 @@ def process():
         return render_template('index.html', error="Please provide both a valid link and RPA ID.")
 
     try:
-        extracted_data = extract_data_from_url(link)
+        modified_link = modify_url(link)
+        extracted_data = extract_data_from_url(modified_link)
         if not extracted_data:
             return render_template('index.html', error="Failed to extract data from the provided link.")
 
@@ -216,6 +257,7 @@ def process():
         query_params = {
             "typeId": 1,
             "id": rpa_id,
+            #"fields[UF_RPA_1_LINK]": modified_link,
             "fields[UF_RPA_1_WEIGHT]": weight,
             "fields[UF_RPA_1_HEIGHT]": height,
             "fields[UF_RPA_1_1734279376]": bmi,
@@ -245,8 +287,11 @@ def process():
             "fields[UF_RPA_1_1738508329]": extracted_data.get("pbf")
         }
 
-        target_url = "https://vitrah.bitrix24.com/rest/1/15urrpzalz7xkysu/rpa.item.update.json"
-        response = requests.post(target_url, data=query_params)
+        target_url = "https://vitrah.bitrix24.com/rest/1/15urrpzalz7xkysu/rpa.item.update.json"        
+        headers = {
+            'Authorization': f'Bearer {session["access_token"]}'
+        }
+        response = requests.post(target_url, data=query_params, headers=headers)
         response.raise_for_status()
 
         return render_template('index.html', success="Data sent successfully to Bitrix24!")
@@ -256,7 +301,6 @@ def process():
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return render_template('index.html', error=f"An unexpected error occurred: {str(e)}")
-
 
 def modify_url(url):
     # Replace all '&' with '%26'
@@ -269,6 +313,9 @@ def modify_url(url):
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
     try:
+        if 'access_token' not in session:
+            return redirect(get_oauth_url())
+
         if request.method == 'POST':
             link = request.form.get('link')
             rpa_id = request.form.get('rpa_id')
@@ -320,6 +367,7 @@ def webhook():
         query_params = {
             "typeId": 1,
             "id": rpa_id,
+            "fields[UF_RPA_1_LINK]": modified_link,
             "fields[UF_RPA_1_WEIGHT]": weight,
             "fields[UF_RPA_1_HEIGHT]": height,
             "fields[UF_RPA_1_1734279376]": bmi,
@@ -350,7 +398,10 @@ def webhook():
         }
 
         target_url = "https://vitrah.bitrix24.com/rest/1/15urrpzalz7xkysu/rpa.item.update.json"
-        response = requests.post(target_url, data=query_params)
+        headers = {
+            'Authorization': f'Bearer {session["access_token"]}'
+        }
+        response = requests.post(target_url, data=query_params, headers=headers)
         response.raise_for_status()
 
         return jsonify({"status": "success", "message": "Data sent successfully to Bitrix24!"}), 200
@@ -360,6 +411,5 @@ def webhook():
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return jsonify({"status": "error", "message": f"An unexpected error occurred: {str(e)}"}), 500
-
 if __name__ == '__main__':
     app.run(debug=True, port=5002)
