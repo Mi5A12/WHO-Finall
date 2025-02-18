@@ -1,0 +1,16 @@
+{
+    "name": "Data Extractor Dashboard",
+    "description": "A dashboard for extracting and visualizing data.",
+    "version": "1.0.0",
+    "start_page": "index.html",
+    "auth": {
+      "type": "none"
+    },
+    "install": {
+      "redirect": "index.html"
+    },
+    "handlers": {
+      "webhook": "https://who-finall.onrender.com/webhook",
+      "process": "https://who-finall.onrender.com/process"
+    }
+  }
