@@ -21,8 +21,8 @@ app.secret_key = 'your_secret_key'
 UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'static/charts')
 DOWNLOAD_FOLDER = os.getenv('DOWNLOAD_FOLDER', 'downloads')
 GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME', 'child-growth-charts')
-CLIENT_ID = 'local.67b4610184f667.59430782'
-CLIENT_SECRET = 'z9GByyQGnY1hPlJrrkALsoBjz3gkWozuXwxwBZxMdmGbFo77fx'
+CLIENT_ID = 'local.67b47a7dd9c654.52839081'
+CLIENT_SECRET = 'mqB4kEddMDIg6YCY8cURMUHR7HXtaaH9iPIhQ090XLUa055Blq'
 REDIRECT_URI = 'http://cultiv.bitrix24.com/oauth/callback'
 
 def get_oauth_url():
