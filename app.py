@@ -9,12 +9,83 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
 from google.cloud import storage
+from flask import session
+from flask_session import Session
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app)
+
+app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "fallback-secret-key")
+app.config["SESSION_TYPE"] = "filesystem"  # Store session data on the server
+
+Session(app)  # Initialize Flask session management
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
-app = Flask(__name__)
 
+
+BITRIX_CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
+BITRIX_CLIENT_SECRET = os.getenv("BITRIX_CLIENT_SECRET")
+BITRIX_REDIRECT_URI = "https://who-finall.onrender.com/oauth"
+BITRIX_AUTH_URL = "https://cultiv.bitrix24.com/oauth/authorize/"
+BITRIX_TOKEN_URL = "https://cultiv.bitrix24.com/oauth/token/"
+BITRIX_API_URL = "https://cultiv.bitrix24.com/rest/"
+
+def get_bitrix_token(code):
+    """Exchange the authorization code for an access token from Bitrix24."""
+    try:
+        payload = {
+            "grant_type": "authorization_code",
+            "client_id": BITRIX_CLIENT_ID,
+            "client_secret": BITRIX_CLIENT_SECRET,
+            "redirect_uri": BITRIX_REDIRECT_URI,
+            "code": code,
+        }
+        response = requests.post(BITRIX_TOKEN_URL, data=payload)
+        token_data = response.json()
+
+        if "access_token" in token_data:
+            logging.info("Bitrix24 Access Token received successfully.")
+            return token_data
+        else:
+            logging.error(f"Failed to retrieve Bitrix24 access token: {token_data}")
+            return None
+    except Exception as e:
+        logging.error(f"Error in get_bitrix_token(): {e}")
+        return None
+
+def refresh_bitrix_token():
+    """Refresh Bitrix24 OAuth Token."""
+    try:
+        if "refresh_token" not in session:
+            logging.error("No refresh token found in session.")
+            return None
+        
+        payload = {
+            "grant_type": "refresh_token",
+            "client_id": BITRIX_CLIENT_ID,
+            "client_secret": BITRIX_CLIENT_SECRET,
+            "refresh_token": session.get("refresh_token"),
+        }
+
+        response = requests.post(BITRIX_TOKEN_URL, data=payload)
+        token_data = response.json()
+
+        if "access_token" in token_data:
+            session["access_token"] = token_data["access_token"]
+            session["refresh_token"] = token_data["refresh_token"]
+            logging.info("Bitrix24 OAuth token refreshed successfully.")
+            return token_data["access_token"]
+        else:
+            logging.error(f"Failed to refresh Bitrix24 token: {token_data}")
+            return None
+
+    except Exception as e:
+        logging.error(f"Token refresh error: {e}")
+        return None
+    
 # Configuration
 UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'static/charts')
 DOWNLOAD_FOLDER = os.getenv('DOWNLOAD_FOLDER', 'downloads')
@@ -23,6 +94,25 @@ GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME', 'child-growth-charts')
 # Ensure directories exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+
+@app.route('/oauth')
+def oauth():
+    """Handle OAuth callback from Bitrix24."""
+    code = request.args.get('code')
+
+    if not code:
+        return jsonify({"error": "Authorization code not provided"}), 400
+
+    token_data = get_bitrix_token(code)
+
+    if not token_data or "access_token" not in token_data:
+        return jsonify({"error": "Failed to retrieve access token"}), 400
+
+    # Store the access token in session
+    session['access_token'] = token_data["access_token"]
+    session['refresh_token'] = token_data["refresh_token"]
+
+    return jsonify({"message": "Bitrix24 Authentication Successful!"})
 
 # Google Cloud Storage client
 storage_client = storage.Client()
@@ -164,9 +254,13 @@ def plot_growth_chart(data, age, metric, metric_label, title, output_path):
     except Exception as e:
         logging.error(f"Error in plot_growth_chart: {e}")
 
-@app.route('/')
+@app.route('/', methods=['GET', 'POST'])
 def index():
-    return render_template('index.html')
+    """Main page for embedding inside Bitrix24."""
+    logging.info(f"Received {request.method} request at / with headers: {dict(request.headers)}")
+
+    # ✅ Instead of JSON, always return the UI
+    return render_template('index.html', BITRIX_CLIENT_ID=BITRIX_CLIENT_ID)
 
 @app.route('/process', methods=['POST'])
 def process():
@@ -257,31 +351,59 @@ def process():
         logging.error(f"An unexpected error occurred: {e}")
         return render_template('index.html', error=f"An unexpected error occurred: {str(e)}")
 
+@app.route('/test_bitrix', methods=['GET'])
+def test_bitrix():
+    """Test if the access token is working by fetching current user info from Bitrix24."""
+    if "access_token" not in session:
+        logging.warning("Access token not found, attempting refresh...")
+        new_token = refresh_bitrix_token()
+        if not new_token:
+            return jsonify({"error": "User not authenticated with Bitrix24"}), 401
+
+    access_token = session["access_token"]
+    url = f"https://cultiv.bitrix24.com/rest/user.current.json"
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    response = requests.get(url, headers=headers)
+
+    # If access token is expired, refresh it
+    if response.status_code == 401:
+        logging.warning("Access token expired. Attempting to refresh...")
+        new_token = refresh_bitrix_token()
+        if not new_token:
+            return jsonify({"error": "Failed to refresh token"}), 401
+        headers["Authorization"] = f"Bearer {new_token}"
+        response = requests.get(url, headers=headers)  # Retry request
+
+    return response.json()
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
+    """Handle incoming requests from Bitrix24 and update the RPA record."""
     try:
-        if request.method == 'POST':
-            link = request.args.get('link')
-            rpa_id = request.args.get('rpa_id')
-        elif request.method == 'GET':
-            link = request.args.get('link')
-            rpa_id = request.args.get('rpa_id')
+        # Ensure the user is authenticated with Bitrix24
+        if "access_token" not in session:
+            return jsonify({"status": "error", "message": "User not authenticated with Bitrix24"}), 401
+
+        # Extract parameters from request
+        link = request.args.get('link') or request.form.get('link')
+        rpa_id = request.args.get('rpa_id') or request.form.get('rpa_id')
 
         if not link or not rpa_id:
-            return jsonify({"status": "error", "message": "Please provide both a valid link and RPA ID."}), 400
+            return jsonify({"status": "error", "message": "Missing required parameters: link and rpa_id"}), 400
 
+        # Extract child growth data
         extracted_data = extract_data_from_url(link)
         if not extracted_data:
-            return jsonify({"status": "error", "message": "Failed to extract data from the provided link."}), 400
+            return jsonify({"status": "error", "message": "Failed to extract data from the provided link"}), 400
 
-        age = int(extracted_data['age'])
-        height = float(extracted_data['height'].replace("cm", ""))
-        weight = float(extracted_data['weight'])
-        bmi = float(extracted_data['bmi'])
+        age = int(extracted_data.get('age', 0))
+        height = float(extracted_data.get('height', '0').replace("cm", ""))
+        weight = float(extracted_data.get('weight', '0'))
+        bmi = float(extracted_data.get('bmi', '0'))
+        gender_key = 'boys' if extracted_data.get('gender', '').lower() == 'male' else 'girls'
 
-        gender_key = 'boys' if extracted_data['gender'].lower() == 'male' else 'girls'
-
+        # Generate growth charts
         chart_paths = {
             "bmi_chart_per": os.path.join(UPLOAD_FOLDER, "bmi_chart_per.png"),
             "bmi_chart_z": os.path.join(UPLOAD_FOLDER, "bmi_chart_z.png"),
@@ -298,6 +420,7 @@ def webhook():
         plot_growth_chart(reference_data.get(f'wfa_{gender_key}_per', pd.DataFrame()), age, weight, "Weight (kg)", "Weight Chart", chart_paths["weight_chart_per"])
         plot_growth_chart(reference_data.get(f'wfa_{gender_key}_z', pd.DataFrame()), age, weight, "Weight Z-Score", "Weight Z-Score Chart", chart_paths["weight_chart_z"])
 
+        # Upload charts to Google Cloud Storage
         gcs_links = {}
         for key, path in chart_paths.items():
             gcs_link = upload_to_gcs(path, f"{extracted_data['name']}_{key}.png")
@@ -307,48 +430,57 @@ def webhook():
                 logging.error(f"Failed to upload {key}")
             gcs_links[key] = gcs_link
 
+        # Prepare API request payload
         query_params = {
-            "typeId": 1,
             "id": rpa_id,
-            "fields[UF_RPA_1_WEIGHT]": weight,
-            "fields[UF_RPA_1_HEIGHT]": height,
-            "fields[UF_RPA_1_1734279376]": bmi,
-            "fields[UF_RPA_1_1734278050]": age,
-            "fields[UF_RPA_1_1738508202]": extracted_data.get("gender"),
-            "fields[UF_RPA_1_1738508402]": gcs_links.get("bmi_chart_per"),
-            "fields[UF_RPA_1_1738508416]": gcs_links.get("bmi_chart_z"),
-            "fields[UF_RPA_1_1738508425]": gcs_links.get("height_chart_per"),
-            "fields[UF_RPA_1_1738508434]": gcs_links.get("height_chart_z"),
-            "fields[UF_RPA_1_1738508444]": gcs_links.get("weight_chart_per"),
-            "fields[UF_RPA_1_1738508458]": gcs_links.get("weight_chart_z"),
-            "fields[UF_RPA_1_1738508088]": extracted_data.get("score"),
-            "fields[UF_RPA_1_1738508230]": extracted_data.get("ecf"),
-            "fields[UF_RPA_1_1738508241]": extracted_data.get("cf"),
-            "fields[UF_RPA_1_1738508249]": extracted_data.get("protein"),
-            "fields[UF_RPA_1_1738508256]": extracted_data.get("minerals"),
-            "fields[UF_RPA_1_1738508263]": extracted_data.get("fat"),
-            "fields[UF_RPA_1_1738508271]": extracted_data.get("body_water"),
-            "fields[UF_RPA_1_1738508280]": extracted_data.get("soft_lean_mass"),
-            "fields[UF_RPA_1_1738508290]": extracted_data.get("fat_free_mass"),
-            "fields[UF_RPA_1_1738508302]": extracted_data.get("smm"),
-            "fields[UF_RPA_1_1738508319]": extracted_data.get("body_fat_mass"),
-            "fields[UF_RPA_1_1738508352]": extracted_data.get("basal_metabolic_rate"),
-            "fields[UF_RPA_1_1738508366]": extracted_data.get("bone_mineral"),
-            "fields[UF_RPA_1_1738508379]": extracted_data.get("waist_hip_ratio"),
-            "fields[UF_RPA_1_1738508390]": extracted_data.get("visceral_fat_level"),
-            "fields[UF_RPA_1_1738508329]": extracted_data.get("pbf")
+            "fields": {
+                "UF_RPA_1_WEIGHT": weight,
+                "UF_RPA_1_HEIGHT": height,
+                "UF_RPA_1_1734279376": bmi,
+                "UF_RPA_1_1734278050": age,
+                "UF_RPA_1_1738508202": extracted_data.get("gender"),
+                "UF_RPA_1_1738508402": gcs_links.get("bmi_chart_per"),
+                "UF_RPA_1_1738508416": gcs_links.get("bmi_chart_z"),
+                "UF_RPA_1_1738508425": gcs_links.get("height_chart_per"),
+                "UF_RPA_1_1738508434": gcs_links.get("height_chart_z"),
+                "UF_RPA_1_1738508444": gcs_links.get("weight_chart_per"),
+                "UF_RPA_1_1738508458": gcs_links.get("weight_chart_z"),
+                "UF_RPA_1_1738508088": extracted_data.get("score"),
+                "UF_RPA_1_1738508230": extracted_data.get("ecf"),
+                "UF_RPA_1_1738508241": extracted_data.get("cf"),
+                "UF_RPA_1_1738508249": extracted_data.get("protein"),
+                "UF_RPA_1_1738508256": extracted_data.get("minerals"),
+                "UF_RPA_1_1738508263": extracted_data.get("fat"),
+                "UF_RPA_1_1738508271": extracted_data.get("body_water"),
+                "UF_RPA_1_1738508280": extracted_data.get("soft_lean_mass"),
+                "UF_RPA_1_1738508290": extracted_data.get("fat_free_mass"),
+                "UF_RPA_1_1738508302": extracted_data.get("smm"),
+                "UF_RPA_1_1738508319": extracted_data.get("body_fat_mass"),
+                "UF_RPA_1_1738508352": extracted_data.get("basal_metabolic_rate"),
+                "UF_RPA_1_1738508366": extracted_data.get("bone_mineral"),
+                "UF_RPA_1_1738508379": extracted_data.get("waist_hip_ratio"),
+                "UF_RPA_1_1738508390": extracted_data.get("visceral_fat_level"),
+                "UF_RPA_1_1738508329": extracted_data.get("pbf"),
+            }
         }
 
-        target_url = "https://vitrah.bitrix24.com/rest/1/15urrpzalz7xkysu/rpa.item.update.json"
-        response = requests.post(target_url, data=query_params)
-        response.raise_for_status()
+        # Send request to Bitrix24 using OAuth token
+        target_url = f"{BITRIX_API_URL}rpa.item.update.json"
+        headers = {"Authorization": f"Bearer {session['access_token']}"}
+        response = requests.post(target_url, json=query_params, headers=headers)
 
-        return jsonify({"status": "success", "message": "Data sent successfully to Bitrix24!"}), 200
+        if response.status_code == 200:
+            return jsonify({"status": "success", "message": "Data sent successfully to Bitrix24!"}), 200
+        else:
+            logging.error(f"Bitrix24 API Error: {response.text}")
+            return jsonify({"status": "error", "message": "Failed to send data", "details": response.text}), 500
+
     except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to send data: {e.response.text if e.response else str(e)}")
-        return jsonify({"status": "error", "message": f"Failed to send data: {e.response.text if e.response else str(e)}"}), 500
+        logging.error(f"Failed to send data: {str(e)}")
+        return jsonify({"status": "error", "message": f"Failed to send data: {str(e)}"}), 500
+
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
+        logging.error(f"Unexpected error: {str(e)}")
         return jsonify({"status": "error", "message": f"An unexpected error occurred: {str(e)}"}), 500
 
 
