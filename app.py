@@ -300,7 +300,8 @@ def process():
 
         gcs_links = {}
         for key, path in chart_paths.items():
-            gcs_link = upload_to_gcs(path, f"{extracted_data['name']}_{key}.png")
+            name_clean = extracted_data['name'].replace(" ", "_")
+            gcs_link = upload_to_gcs(path, f"{name_clean}_{key}.png")
             if gcs_link:
                 logging.info(f"Uploaded {key}: {gcs_link}")
             else:
@@ -423,7 +424,8 @@ def webhook():
         # Upload charts to Google Cloud Storage
         gcs_links = {}
         for key, path in chart_paths.items():
-            gcs_link = upload_to_gcs(path, f"{extracted_data['name']}_{key}.png")
+            name_clean = extracted_data['name'].replace(" ", "_")
+            gcs_link = upload_to_gcs(path, f"{name_clean}_{key}.png")
             if gcs_link:
                 logging.info(f"Uploaded {key}: {gcs_link}")
             else:
